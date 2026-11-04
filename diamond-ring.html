@@ -1,0 +1,615 @@
+<!doctype html>
+<html lang="mn">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Diamond Ring · ASCII</title>
+<style>
+:root{--fg:#d9dde3;--dim:#5b6068;--pink:#ff7aa8;--kw:#ff6b9a;--fn:#7fb2ff;--num:#f2c46d;--str:#a8d58a;--cm:#5d6470}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;background:#000;color:var(--fg);font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;overflow:hidden;-webkit-tap-highlight-color:transparent}
+#app{position:relative;height:100vh;height:100dvh;max-width:480px;margin:0 auto;display:flex;flex-direction:column;background:#000}
+#stage{position:relative;flex:1;min-height:0}
+#bar,#code,#hud,#clock{display:none}
+#msg{position:absolute;left:0;right:0;text-align:center;font-size:clamp(16px,4.6vw,21px);letter-spacing:.14em;color:#eef2fb;opacity:0;pointer-events:none;text-shadow:0 0 6px rgba(200,215,255,.9),0 0 18px rgba(160,185,255,.55);white-space:nowrap}
+canvas{position:absolute;inset:0;width:100%;height:100%}
+#glow{filter:blur(4px) brightness(1.9);opacity:.85}
+#clock{position:absolute;top:calc(10px + env(safe-area-inset-top));right:14px;font-size:11px;color:var(--pink)}
+#hud{position:absolute;left:14px;bottom:8px;font-size:10px;line-height:1.55;color:var(--dim);white-space:pre}
+#bar{display:flex;justify-content:space-between;padding:6px 14px;font-size:10px;color:var(--dim);border-bottom:1px solid #1b1d21}
+#code{flex:1;min-height:0;overflow:hidden;padding:8px 0;font-size:12.5px;line-height:1.7;position:relative}
+#code:before{content:"";position:absolute;left:0;right:0;top:0;height:44px;background:linear-gradient(#000,transparent);z-index:2;pointer-events:none}
+.ln{display:flex;white-space:pre;padding-right:10px}
+.ln .n{flex:0 0 38px;text-align:right;padding-right:14px;color:#3d4148}
+.ln.cur{background:rgba(255,122,168,.09)}
+.ln.cur .n{color:var(--pink)}
+.k{color:var(--kw)}.f{color:var(--fn)}.d{color:var(--num)}.s{color:var(--str)}.c{color:var(--cm)}
+.caret{display:inline-block;width:7px;height:1.1em;background:var(--pink);vertical-align:text-bottom;margin-left:1px}
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="stage">
+    <canvas id="glow"></canvas>
+    <canvas id="main"></canvas>
+    <div id="msg">Надтай үерхээч</div>
+    <div id="clock"></div>
+    <div id="hud"></div>
+  </div>
+</div>
+
+<script>
+(() => {
+"use strict";
+const TAU = Math.PI * 2, PI = Math.PI;
+const clamp = (x, a, b) => x < a ? a : x > b ? b : x;
+const smooth = x => { x = clamp(x, 0, 1); return x * x * (3 - 2 * x); };
+const mix = (a, b, t) => a + (b - a) * t;
+const V = {
+  sub: (a, b) => [a[0]-b[0], a[1]-b[1], a[2]-b[2]],
+  cross: (a, b) => [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]],
+  dot: (a, b) => a[0]*b[0] + a[1]*b[1] + a[2]*b[2],
+  len: a => Math.hypot(a[0], a[1], a[2]),
+  norm: a => { const l = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0]/l, a[1]/l, a[2]/l]; }
+};
+let _s = 7;
+const rnd = () => { _s |= 0; _s = _s + 0x6D2B79F5 | 0; let t = Math.imul(_s ^ _s >>> 15, 1 | _s); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+const hash = (a, b) => { let h = (a * 374761393 + b * 668265263) | 0; h = (h ^ (h >>> 13)) * 1274126177 | 0; return ((h ^ (h >>> 16)) >>> 0) / 4294967295; };
+
+/* ================= timeline ================= */
+const LOOP = 19.5, DRAW0 = 0.3, DRAW1 = 5.6, ORDER_MAX = 2.0, SPIN0 = DRAW1 + 0.6, TURN = 12, FADE = 0.9, TYPE_END = 18.6;
+
+/* ================= geometry ================= */
+const R_BAND = 1.0, BAND_A = 0.115, BAND_C = 0.13;
+const GIRDLE_Y = 1.50, TABLE_Y = 1.74, CULET_Y = 1.02, GIRDLE_R = 0.46, TABLE_R = 0.30;
+const KB = 0, KP = 1, KG = 2;
+
+const PX = [], PY = [], PZ = [], NX = [], NY = [], NZ = [], ORD = [], KIND = [], SEED = [], FID = [], OFX = [], OFY = [], OFZ = [];
+function add(p, n, o, k, s, f) {
+  PX.push(p[0]); PY.push(p[1]); PZ.push(p[2]);
+  NX.push(n[0]); NY.push(n[1]); NZ.push(n[2]);
+  ORD.push(o); KIND.push(k); SEED.push(s); FID.push(f);
+  const a = rnd() * TAU, m = 0.1 + rnd() * 0.45;
+  OFX.push(Math.cos(a) * m); OFY.push(0.05 + rnd() * 0.65); OFZ.push((rnd() - 0.5) * 0.6);
+}
+
+/* band cross-section: rounded rectangle, equal arc-length samples */
+function roundedRect(a, c, rc, M) {
+  const D = [];
+  const line = (x0, z0, x1, z1, nx, nz, n) => { for (let i = 0; i < n; i++) { const t = i / n; D.push([mix(x0, x1, t), mix(z0, z1, t), nx, nz]); } };
+  const arc = (cx, cz, a0, a1, n) => { for (let i = 0; i < n; i++) { const t = mix(a0, a1, i / n); D.push([cx + rc * Math.cos(t), cz + rc * Math.sin(t), Math.cos(t), Math.sin(t)]); } };
+  line(a, -(c - rc), a, c - rc, 1, 0, 200);          arc(a - rc, c - rc, 0, PI / 2, 40);
+  line(a - rc, c, -(a - rc), c, 0, 1, 200);          arc(-(a - rc), c - rc, PI / 2, PI, 40);
+  line(-a, c - rc, -a, -(c - rc), -1, 0, 200);       arc(-(a - rc), -(c - rc), PI, 1.5 * PI, 40);
+  line(-(a - rc), -c, a - rc, -c, 0, -1, 200);       arc(a - rc, -(c - rc), 1.5 * PI, TAU, 40);
+  const L = [0];
+  for (let i = 1; i <= D.length; i++) { const p = D[i - 1], q = D[i % D.length]; L.push(L[i - 1] + Math.hypot(q[0] - p[0], q[1] - p[1])); }
+  const tot = L[D.length], out = []; let j = 0;
+  for (let m = 0; m < M; m++) { const s = tot * (m + 0.5) / M; while (j < D.length - 1 && L[j + 1] < s) j++; out.push(D[j]); }
+  return out;
+}
+
+/* band — drawn from the bottom upward */
+{
+  const XS = roundedRect(BAND_A, BAND_C, 0.04, 48), NA = 440;
+  for (let i = 0; i < NA; i++) {
+    const a = TAU * (i + 0.5) / NA, rx = Math.sin(a), ry = -Math.cos(a);
+    const o = Math.min(a, TAU - a) / PI * 0.9;
+    for (let q = 0; q < XS.length; q++) {
+      const [x, z, nx, nz] = XS[q], rad = R_BAND + x;
+      add([rx * rad, ry * rad, z], [rx * nx, ry * nx, nz], o, KB, rnd(), 0);
+    }
+  }
+}
+/* prongs — four claws rising from the band to the girdle */
+for (let i = 0; i < 4; i++) {
+  const a = TAU * (i + 0.5) / 4, ca = Math.cos(a), sa = Math.sin(a);
+  const rr = [ca, 0, sa], tt = [-sa, 0, ca];
+  const R0 = 0.10, R1 = GIRDLE_R + 0.02, Y0p = 1.08, Y1p = GIRDLE_Y + 0.07;
+  const rad = u => R0 + (R1 - R0) * Math.pow(u, 0.75), yy = u => Y0p + (Y1p - Y0p) * u;
+  for (let s = 0; s <= 60; s++) {
+    const u = s / 60, e = 0.01;
+    const dr = rad(Math.min(1, u + e)) - rad(Math.max(0, u - e)), dy = yy(Math.min(1, u + e)) - yy(Math.max(0, u - e));
+    const D = V.norm([dr * rr[0], dy, dr * rr[2]]);
+    const s2 = V.cross(D, tt), w = 0.03 - 0.009 * u;
+    const P = [rad(u) * rr[0], yy(u), rad(u) * rr[2]];
+    for (let j = 0; j < 10; j++) {
+      const ph = TAU * j / 10, n = [Math.cos(ph) * tt[0] + Math.sin(ph) * s2[0], Math.cos(ph) * tt[1] + Math.sin(ph) * s2[1], Math.cos(ph) * tt[2] + Math.sin(ph) * s2[2]];
+      add([P[0] + w * n[0], P[1] + w * n[1], P[2] + w * n[2]], n, 0.95 + u * 0.3, KP, rnd(), 0);
+    }
+  }
+}
+/* diamond — brilliant cut: flat facets, one normal each */
+{
+  const CEN = [0, (CULET_Y + TABLE_Y) / 2, 0];
+  let fid = 1;
+  const facet = (a, b, c) => {
+    let n = V.norm(V.cross(V.sub(b, a), V.sub(c, a)));
+    const m = [(a[0] + b[0] + c[0]) / 3, (a[1] + b[1] + c[1]) / 3, (a[2] + b[2] + c[2]) / 3];
+    if (V.dot(n, V.sub(m, CEN)) < 0) n = [-n[0], -n[1], -n[2]];
+    const e = Math.max(V.len(V.sub(b, a)), V.len(V.sub(c, b)), V.len(V.sub(a, c)));
+    const K = clamp(Math.ceil(e / 0.02), 3, 18), s = rnd(), id = fid++;
+    for (let i = 0; i <= K; i++) for (let j = 0; j <= K - i; j++) {
+      const u = (i + 0.2) / (K + 0.6), v = (j + 0.2) / (K + 0.6);
+      if (u + v > 1) continue;
+      const p = [a[0] + (b[0] - a[0]) * u + (c[0] - a[0]) * v, a[1] + (b[1] - a[1]) * u + (c[1] - a[1]) * v, a[2] + (b[2] - a[2]) * u + (c[2] - a[2]) * v];
+      add(p, n, 1.2 + clamp((p[1] - CULET_Y) / (TABLE_Y - CULET_Y), 0, 1) * 0.5, KG, s, id);
+    }
+  };
+  const ring = (n, r, y, ph) => Array.from({ length: n }, (_, k) => { const a = (k + ph) * TAU / n; return [r * Math.cos(a), y, r * Math.sin(a)]; });
+  const T = ring(8, TABLE_R, TABLE_Y, 0.5);
+  const f = 0.62, Sr = TABLE_R + f * (GIRDLE_R - TABLE_R), Sy = TABLE_Y + f * (GIRDLE_Y - TABLE_Y) + 0.015;
+  const S = ring(8, Sr, Sy, 0);
+  const G = ring(16, GIRDLE_R, GIRDLE_Y, 0);
+  const TOP = [0, TABLE_Y, 0], CUL = [0, CULET_Y, 0];
+  for (let k = 0; k < 8; k++) {
+    facet(TOP, T[k], T[(k + 1) % 8]);
+    facet(T[k], T[(k + 1) % 8], S[(k + 1) % 8]);
+    facet(T[k], S[k], G[2 * k + 1]);
+    facet(T[k], G[2 * k + 1], S[(k + 1) % 8]);
+  }
+  for (let m = 0; m < 8; m++) {
+    facet(S[m], G[(2 * m + 15) % 16], G[2 * m]);
+    facet(S[m], G[2 * m], G[2 * m + 1]);
+  }
+  for (let j = 0; j < 16; j++) facet(CUL, G[j], G[(j + 1) % 16]);
+  // thin girdle rim
+  for (let i = 0; i < 180; i++) for (let y = 0; y < 5; y++) {
+    const a = TAU * i / 180, yy = GIRDLE_Y - 0.03 + y * 0.0075;
+    add([GIRDLE_R * Math.cos(a), yy, GIRDLE_R * Math.sin(a)], [Math.cos(a), 0, Math.sin(a)], 1.5, KG, rnd(), 99);
+  }
+}
+const N = PX.length;
+const aPX = Float32Array.from(PX), aPY = Float32Array.from(PY), aPZ = Float32Array.from(PZ);
+const aNX = Float32Array.from(NX), aNY = Float32Array.from(NY), aNZ = Float32Array.from(NZ);
+const aORD = Float32Array.from(ORD), aSEED = Float32Array.from(SEED), aKIND = Uint8Array.from(KIND), aFID = Int16Array.from(FID);
+const aOFX = Float32Array.from(OFX), aOFY = Float32Array.from(OFY), aOFZ = Float32Array.from(OFZ);
+
+/* ================= canvas / grid ================= */
+const stage = document.getElementById("stage");
+const main = document.getElementById("main"), glow = document.getElementById("glow");
+const ctx = main.getContext("2d"), gctx = glow.getContext("2d");
+const D_CAM = 7, Y0 = 0.4, TILT = 0.2, cT = Math.cos(TILT), sT = Math.sin(TILT);
+let W, H, dpr, FS, CW, CH, COLS, ROWS, S, CX, CY, groundRow;
+let zb, br, nxb, nyb, kb, fb, arr, spb, oc;
+let dust = [];
+const msg = document.getElementById('msg');
+const FONT = f => f + 'px ui-monospace,"SF Mono",Menlo,Consolas,monospace';
+function resize() {
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  W = stage.clientWidth; H = stage.clientHeight;
+  main.width = W * dpr; main.height = H * dpr;
+  glow.width = Math.ceil(W * dpr / 2); glow.height = Math.ceil(H * dpr / 2);
+  FS = clamp(W / 68, 5.6, 8);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.font = FONT(FS); ctx.textBaseline = "top";
+  CW = ctx.measureText("M").width; CH = FS * 1.18;
+  COLS = Math.floor(W / CW); ROWS = Math.floor(H / CH);
+  S = Math.min(H * 0.205, W * 0.2);
+  CX = W / 2; CY = H * 0.5;
+  groundRow = Math.floor((CY - (-1.2 - Y0) * S) / CH);
+  msg.style.top = ((groundRow + 3) * CH) + 'px';
+  const n = COLS * ROWS;
+  zb = new Float32Array(n); br = new Float32Array(n); nxb = new Float32Array(n); nyb = new Float32Array(n);
+  kb = new Uint8Array(n); fb = new Int16Array(n); arr = new Float32Array(n); spb = new Float32Array(n); oc = new Uint8Array(n);
+  dust = [];
+  for (let i = 0; i < 260; i++) dust.push({ c: (rnd() * COLS) | 0, r: (rnd() * ROWS) | 0, p: rnd() * 6, ch: "+.&8%·'+."[(rnd() * 9) | 0], a: 0.12 + rnd() * 0.32 });
+}
+
+const RAMP = " .,:;-~=+*ctfjrxvuoae{(<[%&S8B$@#";
+const SCAT = "%&8$@#+*:.'";
+const REFL = "+rtfjcvx=:";
+
+/* ================= code panel ================= */
+const CODE = `"""art.py - a diamond ring, drawn in letters by light"""
+import numpy as np
+
+TAU = np.pi * 2
+LOOP, FPS = 19.5, 30
+
+# -- the ring ------------------------------------------------
+
+R_BAND = 1.00                       # band centre radius
+BAND_A, BAND_C = 0.115, 0.130       # half width, half depth
+GIRDLE_Y, TABLE_Y, CULET_Y = 1.50, 1.74, 1.02
+GIRDLE_R, TABLE_R = 0.46, 0.30
+
+def rounded_rect(a, c, r, m):
+    """band cross-section: m points, equal arc length"""
+    path = lines(a, c) + arcs(r)
+    return resample(path, m)
+
+def band():
+    """a thick band, bent into a circle, 440 slices"""
+    xs = rounded_rect(BAND_A, BAND_C, 0.04, 48)
+    a = np.linspace(0, TAU, 440)
+    ring = np.stack([np.sin(a), -np.cos(a)], -1)
+    pos = ring * (R_BAND + xs.x) + depth(xs.z)
+    return pos, ring * xs.nx + depth(xs.nz)
+
+def facet(corners, n):
+    """sample a triangle, keep ONE normal for all of it"""
+    a, b, c = corners
+    k = int(np.ceil(edge(corners) / 0.02))
+    u, v = grid(k, k)
+    keep = u + v <= 1
+    pts = a + (b - a) * u[keep] + (c - a) * v[keep]
+    return pts, np.tile(n / np.linalg.norm(n), (len(pts), 1))
+
+def diamond():
+    """brilliant cut: table, star, kite, girdle, pavilion"""
+    T = ring(8, TABLE_R, TABLE_Y, phase=0.5)
+    S = ring(8, star_r, star_y, phase=0.0)
+    G = ring(16, GIRDLE_R, GIRDLE_Y)
+    for k in range(8):
+        facet((TOP, T[k], T[k + 1]), UP)
+        facet((T[k], T[k + 1], S[k + 1]), out())
+        facet((T[k], S[k], G[2 * k + 1]), out())
+        facet((T[k], G[2 * k + 1], S[k + 1]), out())
+    for m in range(8):
+        facet((S[m], G[2 * m - 1], G[2 * m]), out())
+        facet((S[m], G[2 * m], G[2 * m + 1]), out())
+    for j in range(16):
+        facet((CULET, G[j], G[j + 1]), out())
+
+def prongs():
+    for i in range(4):
+        a = TAU * (i + 0.5) / 4
+        base = np.array([0.10 * cos(a), 1.08, 0.10 * sin(a)])
+        tip = np.array([(GIRDLE_R + 0.02) * cos(a), GIRDLE_Y + 0.07, 0])
+        claw(base, tip, radius=0.03)
+
+# -- light: a key, a moving rim and a sparkle ----------------
+
+def lights(t):
+    key = np.array([-0.25, 0.75, 0.60])
+    rim = np.array([np.cos(t * 0.9), 0.5, np.sin(t * 0.9)])
+    return unit(key), unit(rim)
+
+def env(n):
+    """fake chrome: reflect the view ray, read stripes"""
+    r = 2 * n[2] * n - np.array([0, 0, 1])
+    return (0.5 + 0.5 * np.sin(r[1] * 5 + r[0] * 2.5)) ** 5
+
+def spin(t):
+    return TAU * max(t - DRAW[1] - 0.6, 0) / TURN
+
+def draw_order():
+    """the band draws itself from the bottom up"""
+    up_band = abs(angle_from_bottom(P)) / np.pi * 0.9
+    prong = 0.95 + u * 0.3
+    gem = 1.2 + (P[:, 1] - CULET_Y) / (TABLE_Y - CULET_Y) * 0.5
+    return select([KIND == BAND, KIND == PRONG], [up_band, prong], gem)
+
+ORDER = draw_order()          # 0 ... 1.7
+DRAW = (0.3, 5.6)             # the sweep, in seconds
+
+def gather(P, t):
+    """points fly in as the drawing light passes"""
+    head = (t - DRAW[0]) / (DRAW[1] - DRAW[0]) * ORDER.max()
+    k = smooth((head - ORDER + 0.08) / 0.28)
+    return P + SCATTER * (1 - k) ** 2, k
+
+def shade(n, key, rim, seed, t):
+    base = 0.10 + 0.35 * max(0, n @ key) + 0.7 * max(0, n @ rim) ** 3
+    spark = max(0, np.sin(t * (2.5 + seed * 5) + seed * 40)) ** 14
+    return base + 0.55 * env(n) + 1.2 * spark
+
+def edge_letter(gx, gy):
+    """outline cells follow the edge: | - _ ( ) and diagonals"""
+    if abs(gy) > 2.2 * abs(gx):
+        return "-" if gy > 0 else "_"
+    if abs(gx) > 2.2 * abs(gy):
+        return "(" if gx > 0 else ")"
+    return diagonal(gx, gy)
+
+def to_letters(b):
+    return RAMP[int(min(b, 1.0) * (len(RAMP) - 1))]
+
+def ripple(t):
+    """when the stone lands, rings of dots run outward"""
+    return [(t - DRAW[1] - 0.28 * j) * 2.1 for j in range(3)]
+
+def orbit(t, e):
+    """two wide ellipses crossing like an atom"""
+    th = np.linspace(0, TAU, 260)
+    p = np.stack([2.05 * np.cos(th), 0.62 * np.sin(th)], -1)
+    return rot_z(p, (-1, 1)[e] * 0.52)
+`;
+const codeEl = { clientHeight: 0 };
+const LINES = CODE.split("\n");
+const LINE_START = []; { let acc = 0; for (const l of LINES) { LINE_START.push(acc); acc += l.length + 1; } }
+const TOTAL = CODE.length;
+const esc = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+const TOK = /(#.*$)|("""[\s\S]*?"""|"[^"]*"|'[^']*')|\b(def|return|for|in|or|import|as|if|else|and|not)\b|\b(\d+\.?\d*)\b|\b([A-Za-z_]\w*)(?=\()/g;
+function hl(line) {
+  let out = "", last = 0, m; TOK.lastIndex = 0;
+  while ((m = TOK.exec(line))) {
+    out += esc(line.slice(last, m.index));
+    const cls = m[1] ? "c" : m[2] ? "s" : m[3] ? "k" : m[4] ? "d" : "f";
+    out += `<span class="${cls}">${esc(m[0])}</span>`; last = TOK.lastIndex;
+    if (m[0].length === 0) TOK.lastIndex++;
+  }
+  return out + esc(line.slice(last));
+}
+let lastTyped = -1;
+function renderCode(typed) {
+  if (typed === lastTyped) return; lastTyped = typed;
+  let cur = 0; while (cur + 1 < LINES.length && LINE_START[cur + 1] <= typed) cur++;
+  const visible = Math.max(5, Math.floor(codeEl.clientHeight / (12.5 * 1.7)));
+  const first = Math.max(0, cur - visible + 3);
+  let html = "";
+  for (let i = first; i <= cur; i++) {
+    const txt = i < cur ? LINES[i] : LINES[i].slice(0, typed - LINE_START[i]);
+    html += `<div class="ln${i === cur ? " cur" : ""}"><span class="n">${i + 1}</span><span>${hl(txt)}${i === cur ? '<i class="caret"></i>' : ""}</span></div>`;
+  }
+
+}
+
+/* ================= helpers for drawing ================= */
+const hud = document.getElementById("hud"), clock = document.getElementById("clock");
+let hudTxt = "", clockTxt = "";
+const key = V.norm([-0.25, 0.75, 0.6]);
+const occ = (c, r) => (c >= 0 && c < COLS && r >= 0 && r < ROWS) ? oc[r * COLS + c] : 0;
+let GA = 1;
+
+function glyph(ch, c, r, a, color) {
+  if (c < 0 || c >= COLS || r < 0 || r >= ROWS) return;
+  ctx.globalAlpha = clamp(a, 0, 1) * GA;
+  if (color) ctx.fillStyle = color;
+  ctx.fillText(ch, c * CW, r * CH);
+}
+function star(c, r, I) {
+  const L = 2 + Math.round(I * 5);
+  ctx.fillStyle = "#fff";
+  for (let d = 1; d <= L * 2; d++) {
+    const a = I * 0.85 * (1 - d / (L * 2 + 1));
+    glyph("-", c + d, r, a); glyph("-", c - d, r, a);
+  }
+  for (let d = 1; d <= L; d++) {
+    const a = I * 0.85 * (1 - d / (L + 1));
+    glyph("|", c, r + d, a); glyph("|", c, r - d, a);
+  }
+  glyph("+", c, r, I);
+}
+function project(x, y, z) { const f = D_CAM / (D_CAM - z); return [CX + x * S * f, CY - (y - Y0) * S * f, f]; }
+function camera(x, y, z, ang) {          // spin about Y, then tilt about X
+  const cA = Math.cos(ang), sA = Math.sin(ang);
+  const x1 = x * cA + z * sA, z1 = -x * sA + z * cA;
+  return [x1, y * cT - z1 * sT, y * sT + z1 * cT];
+}
+const ORB_N = 520, ORB_A = 2.05, ORB_B = 0.62;
+function orbitPoint(e, th, t) {
+  const rz = (e ? 1 : -1) * 0.52, cr = Math.cos(rz), sr = Math.sin(rz);
+  const x = ORB_A * Math.cos(th), y = ORB_B * Math.sin(th);
+  const x1 = x * cr - y * sr, y1 = x * sr + y * cr;
+  const y2 = y1 * 0.9 + 0.45, z2 = y1 * 0.43;
+  const pr = 0.4 * Math.sin(t * 0.33 + e * 2), cp = Math.cos(pr), sp = Math.sin(pr);
+  const x3 = x1 * cp + z2 * sp, z3 = -x1 * sp + z2 * cp;
+  return [x3, y2 * cT - z3 * sT, y2 * sT + z3 * cT];
+}
+
+/* ================= frame ================= */
+let tStart = performance.now(), last = 0, fr = 0;
+const q = new URLSearchParams(location.search);
+const FIXED = q.has("t") ? parseFloat(q.get("t")) : null;
+window.addEventListener("pointerdown", () => { tStart = performance.now(); });
+window.addEventListener("resize", () => { resize(); });
+resize();
+
+function frame(now) {
+  requestAnimationFrame(frame);
+  if (FIXED === null && now - last < 33) return; last = now; fr++;
+  const t = FIXED !== null ? FIXED : ((now - tStart) / 1000) % LOOP;
+  GA = 1 - smooth((t - (LOOP - FADE)) / FADE);
+  const head = clamp((t - DRAW0) / (DRAW1 - DRAW0), 0, 1) * ORDER_MAX;
+  const ang = TAU * Math.max(t - SPIN0, 0) / TURN;
+  const cA = Math.cos(ang), sA = Math.sin(ang);
+  const rim = V.norm([Math.cos(t * 0.9), 0.5, Math.sin(t * 0.9)]);
+  const hv = V.norm([key[0], key[1], key[2] + 1]);
+
+  zb.fill(-1e9); kb.fill(0); arr.fill(0); spb.fill(0);
+  let glints = 0;
+
+  /* ---- splat the point cloud into the z-buffered letter grid ---- */
+  for (let i = 0; i < N; i++) {
+    let k = (head - aORD[i] + 0.08) / 0.28;
+    if (k <= 0) continue; if (k > 1) k = 1;
+    const ks = k * k * (3 - 2 * k), w = (1 - ks) * (1 - ks);
+    const x = aPX[i] + aOFX[i] * w, y = aPY[i] + aOFY[i] * w, z = aPZ[i] + aOFZ[i] * w;
+    const x1 = x * cA + z * sA, z1 = -x * sA + z * cA;
+    const y2 = y * cT - z1 * sT, z2 = y * sT + z1 * cT;
+    const f = D_CAM / (D_CAM - z2);
+    const col = Math.floor((CX + x1 * S * f) / CW), row = Math.floor((CY - (y2 - Y0) * S * f) / CH);
+    if (col < 0 || col >= COLS || row < 0 || row >= ROWS) continue;
+    const idx = row * COLS + col;
+    if (z2 <= zb[idx]) continue;
+    const nx1 = aNX[i] * cA + aNZ[i] * sA, nz1 = -aNX[i] * sA + aNZ[i] * cA;
+    const ny2 = aNY[i] * cT - nz1 * sT, nz2 = aNY[i] * sT + nz1 * cT;
+    const kd = aKIND[i], sd = aSEED[i];
+    const lam = Math.max(0, key[0] * nx1 + key[1] * ny2 + key[2] * nz2);
+    const rd = Math.max(0, rim[0] * nx1 + rim[1] * ny2 + rim[2] * nz2);
+    const rx = 2 * nz2 * nx1, ry = 2 * nz2 * ny2;
+    let b, sp = 0;
+    if (kd === KG) {
+      const envG = Math.pow(0.5 + 0.5 * Math.sin(ry * 9 + rx * 7 + sd * 6.283 + t * 0.4), 4);
+      sp = Math.pow(Math.max(0, Math.sin(t * (2.5 + sd * 5) + sd * 40)), 14);
+      const spec = Math.pow(Math.max(0, hv[0] * nx1 + hv[1] * ny2 + hv[2] * nz2), 28);
+      b = 0.2 + 0.25 * lam + 0.75 * envG + 0.3 * Math.pow(rd, 2) + 1.2 * sp + 0.9 * spec;
+      if (sp > 0.55 || spec > 0.6) glints++;
+      sp = Math.max(sp, spec);
+    } else {
+      const env = Math.pow(0.5 + 0.5 * Math.sin(ry * 5 + rx * 2.5 + 1), 5);
+      b = 0.1 + 0.35 * lam + 0.7 * Math.pow(rd, 3) + 0.3 * Math.pow(1 - Math.abs(nz2), 2) + 0.55 * env;
+    }
+    const dh = head - aORD[i];
+    if (dh < 0.12 && head < ORDER_MAX + 0.08) b += 0.7 * (1 - Math.max(dh, 0) / 0.12);
+    zb[idx] = z2; br[idx] = b * (0.35 + 0.65 * ks); nxb[idx] = nx1; nyb[idx] = ny2;
+    kb[idx] = kd + 1; fb[idx] = aFID[i]; arr[idx] = ks; spb[idx] = sp;
+  }
+  /* ---- close single-cell holes ---- */
+  {
+    const fill = [];
+    for (let r = 1; r < ROWS - 1; r++) for (let c = 1; c < COLS - 1; c++) {
+      const idx = r * COLS + c; if (kb[idx]) continue;
+      if (kb[idx - 1] && kb[idx + 1] && arr[idx - 1] > 0.88 && arr[idx + 1] > 0.88) fill.push(idx, idx - 1);
+      else if (kb[idx - COLS] && kb[idx + COLS] && arr[idx - COLS] > 0.88 && arr[idx + COLS] > 0.88) fill.push(idx, idx - COLS);
+    }
+    for (let i = 0; i < fill.length; i += 2) {
+      const d = fill[i], s = fill[i + 1];
+      kb[d] = kb[s]; br[d] = br[s]; nxb[d] = nxb[s]; nyb[d] = nyb[s]; fb[d] = fb[s]; arr[d] = arr[s]; spb[d] = spb[s];
+    }
+    for (let i = 0; i < kb.length; i++) oc[i] = (kb[i] && arr[i] >= 0.88) ? 1 : 0;
+  }
+
+  /* ---- draw ---- */
+  msg.style.opacity = (smooth((t - 6.4) / 1.4) * GA * (0.88 + 0.12 * Math.sin(t * 2.2))).toFixed(3);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  ctx.font = FONT(FS); ctx.textBaseline = "top";
+
+  // dust
+  ctx.fillStyle = "#cfd6e2";
+  for (const d of dust) {
+    if (kb[d.r * COLS + d.c]) continue;
+    glyph(d.ch, d.c, d.r, d.a * (0.45 + 0.55 * Math.sin(t * 1.4 + d.p)));
+  }
+  // gem centre on screen
+  const gem = project(0, 1.38 * cT, 1.38 * sT);
+  const gcol = Math.floor(gem[0] / CW), grow = Math.floor(gem[1] / CH);
+  const top = project(0, TABLE_Y * cT, TABLE_Y * sT);
+  const tcol = Math.floor(top[0] / CW), trow = Math.floor(top[1] / CH);
+
+  // shockwave — rings of dots when the stone lands
+  {
+    const dt = t - (DRAW1 - 0.3);
+    if (dt > 0 && dt < 3.2) for (let j = 0; j < 3; j++) {
+      const rad = (dt - j * 0.28) * 2.1;
+      if (rad < 0.05 || rad > 4.2) continue;
+      const al = (1 - rad / 4.2) * 0.5 * (1 - j * 0.22), pr = rad * S;
+      const n = Math.max(14, Math.floor(TAU * pr / CW / 1.5));
+      ctx.fillStyle = "#cfd6e2";
+      for (let s = 0; s < n; s++) {
+        const th = TAU * s / n + j;
+        const c = Math.floor((gem[0] + Math.cos(th) * pr) / CW), r = Math.floor((gem[1] + Math.sin(th) * pr) / CH);
+        if (c < 0 || c >= COLS || r < 0 || r >= ROWS || kb[r * COLS + c]) continue;
+        glyph(hash(s, j) > 0.7 ? ":" : ".", c, r, al * (0.3 + 0.7 * hash(s + fr, j)));
+      }
+    }
+  }
+  // orbits — two wide ellipses, like an atom
+  {
+    const oa = smooth((t - 6.3) / 1.4);
+    if (oa > 0) {
+      ctx.fillStyle = "#cfd6e2";
+      for (let e = 0; e < 2; e++) {
+        for (let u = 0; u < ORB_N; u++) {
+          const th = TAU * u / ORB_N, p = orbitPoint(e, th, t), s = project(p[0], p[1], p[2]);
+          const c = Math.floor(s[0] / CW), r = Math.floor(s[1] / CH);
+          if (c < 0 || c >= COLS || r < 0 || r >= ROWS || kb[r * COLS + c]) continue;
+          const pulse = Math.pow(0.5 + 0.5 * Math.sin(th * 2 - t * 2 + e * 3), 10);
+          const hh = hash(u, e + 31);
+          glyph(pulse > 0.5 && hh > 0.5 ? "8%&"[(hh * 6) | 0 % 3] || "8" : "'.:+`"[(hh * 5) | 0], c, r, oa * (0.26 + 0.6 * pulse) * (p[2] > 0 ? 1 : 0.75));
+        }
+        // travelling sparks
+        const base = t * 0.9 + e * PI;
+        for (let j = 0; j < 7; j++) {
+          const p = orbitPoint(e, base - j * 0.045, t), s = project(p[0], p[1], p[2]);
+          glyph("@8*+:.."[j], Math.floor(s[0] / CW), Math.floor(s[1] / CH), oa * (1 - j / 7), "#fff");
+        }
+      }
+    }
+  }
+  // light beams: a fan above the table, a stem under the ring
+  {
+    const ba = smooth((head - 1.75) / 0.2);
+    if (ba > 0) {
+      ctx.fillStyle = "#e8eeff";
+      for (let ri = -4; ri <= 4; ri++) {
+        const ang2 = ri * 0.11, Lr = 7 + 8 * (1 - Math.abs(ri) / 5) + 2 * Math.sin(t * 3 + ri);
+        for (let d = 1; d < Lr; d++) {
+          const c = tcol + Math.round(d * Math.tan(ang2) * CH / CW);
+          glyph(ri === 0 ? "|" : ri < 0 ? "\\" : "/", c, trow - d - 1, ba * (0.18 + 0.3 * Math.abs(Math.sin(t * 6 + ri * 2.3))) * (1 - d / Lr));
+        }
+      }
+      const bot = project(0, -R_BAND * cT - 0.12, -R_BAND * sT * -1);
+      const bc = Math.floor(bot[0] / CW), br0 = Math.floor(bot[1] / CH);
+      for (let d = 0; d < 11; d++) glyph("|", bc, br0 + d, ba * 0.35 * (1 - d / 11) * (0.7 + 0.3 * Math.sin(t * 5)));
+    }
+  }
+
+  // ring, with reflection
+  let letters = 0;
+  const cand = [];
+  for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) {
+    const idx = r * COLS + c, kd = kb[idx]; if (!kd) continue;
+    const a = arr[idx];
+    let ch, al, b = br[idx];
+    if (a < 0.88) {
+      ch = SCAT[(hash(c + fr, r) * SCAT.length) | 0]; al = 0.2 + 0.8 * a; b = 0.4;
+    } else {
+      letters++;
+      let edge = false;
+      const n1 = occ(c - 1, r - 1), n2 = occ(c, r - 1), n3 = occ(c + 1, r - 1), n4 = occ(c - 1, r), n6 = occ(c + 1, r), n7 = occ(c - 1, r + 1), n8 = occ(c, r + 1), n9 = occ(c + 1, r + 1);
+      const cnt = n1 + n2 + n3 + n4 + n6 + n7 + n8 + n9;
+      if (cnt <= 6) {
+        const gxr = ((n3 + 2 * n6 + n9) - (n1 + 2 * n4 + n7)) * CH / CW * 0.5, gyr = (n7 + 2 * n8 + n9) - (n1 + 2 * n2 + n3);
+        const ax = Math.abs(gxr), ay = Math.abs(gyr);
+        if (ax + ay > 0.5) {
+          const hh = hash(c, r);
+          if (ay > 2.2 * ax) ch = gyr > 0 ? (hh < 0.55 ? "-" : hh < 0.85 ? "~" : "=") : (hh < 0.75 ? "_" : "-");
+          else if (ax > 2.2 * ay) ch = gxr > 0 ? (hh < 0.5 ? "|" : hh < 0.75 ? "(" : hh < 0.9 ? "[" : "{") : (hh < 0.5 ? "|" : hh < 0.75 ? ")" : hh < 0.9 ? "]" : "}");
+          else ch = gxr * gyr > 0 ? "/" : "\\";
+          b = Math.max(b, 0.5) + 0.2; edge = true;
+        }
+      }
+      if (!edge && kd === KG + 1) {
+        const fR = (c + 1 < COLS && kb[idx + 1] === kd) ? fb[idx + 1] : -1, fD = (r + 1 < ROWS && kb[idx + COLS] === kd) ? fb[idx + COLS] : -1;
+        const dR = fR >= 0 && fR !== fb[idx], dD = fD >= 0 && fD !== fb[idx];
+        if ((dR || dD) && hash(c * 3, r * 7) < 0.7) { ch = dR && dD ? (nxb[idx] > 0 ? "/" : "\\") : dR ? "|" : "-"; b = Math.max(b, 0.6) + 0.15; }
+      }
+      if (!ch) {
+        let ci = Math.floor(clamp(b, 0, 1) * (RAMP.length - 2)) + 1 + Math.round((hash(c, r + ((t * 5) | 0)) - 0.5) * 2.4);
+        ch = RAMP[clamp(ci, 1, RAMP.length - 1)];
+      }
+      al = 0.2 + b * 0.9;
+      if (kd === KG + 1 && spb[idx] > 0.55) cand.push(c, r, spb[idx]);
+    }
+    ctx.fillStyle = b > 1.0 ? "#ffffff" : (kd === KG + 1 ? "#e4eaff" : "#d3d9e6");
+    glyph(ch, c, r, al);
+    // mirrored reflection on the floor
+    const rr = groundRow + Math.round((groundRow - r) * 0.4);
+    if (rr > groundRow && rr < ROWS) {
+      const fade = 1 - (rr - groundRow) / 16;
+      if (fade > 0) { ctx.fillStyle = "#cfd6e2"; glyph(REFL[(hash(c, r + 9) * REFL.length) | 0], c, rr, 0.13 * fade * Math.min(1, b)); }
+    }
+  }
+  // glint stars on the strongest facets
+  cand.sort;
+  const chosen = [];
+  for (let i = 0; i < cand.length; i += 3) {
+    if (chosen.length >= 9) break;
+    let ok = true;
+    for (const s of chosen) if (Math.abs(s[0] - cand[i]) < 4 && Math.abs(s[1] - cand[i + 1]) < 3) { ok = false; break; }
+    if (ok && hash(cand[i] + fr * 0, cand[i + 1]) < 0.6) chosen.push([cand[i], cand[i + 1], Math.min(1, cand[i + 2])]);
+  }
+  for (const s of chosen) star(s[0], s[1], s[2]);
+  ctx.globalAlpha = 1;
+
+  // glow copy at half resolution
+  gctx.clearRect(0, 0, glow.width, glow.height);
+  gctx.drawImage(main, 0, 0, glow.width, glow.height);
+
+  /* ---- HUD + code ---- */
+  const deg = ((ang * 180 / PI) % 360).toFixed(2).padStart(6, "0");
+  const ht = `@you · 2026\nrotation ${deg}°   glints ${String(glints).padStart(3, " ")}\nletters ${letters.toLocaleString("en-US").padStart(5, "0")}`;
+  if (ht !== hudTxt) { hud.textContent = ht; hudTxt = ht; }
+  const ct = `● t ${t.toFixed(2).padStart(5, "0")}s`;
+  if (ct !== clockTxt) { clock.textContent = ct; clockTxt = ct; }
+  const x = clamp(t / TYPE_END, 0, 1);
+}
+requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
